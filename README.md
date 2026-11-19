@@ -5,9 +5,11 @@
 **Client live URL:** https://YOUR-CLIENT-LIVE-URL
 
 ## Purpose
+
 REST API for the RentGear equipment rental marketplace: users & roles, equipment listings, favorites, bookings, Stripe payments and dashboard analytics.
 
 ## Key Features
+
 - JWT verification with role middlewares: `verifyToken`, `verifyRenter`, `verifyOwner`, `verifyAdmin`
 - Server-side search, filter, sort and pagination for equipment
 - Stripe Checkout session + payment confirmation (stored in `payments`)
@@ -18,9 +20,11 @@ REST API for the RentGear equipment rental marketplace: users & roles, equipment
 - Daily cron job (`node-cron` + Vercel Cron) that completes finished rentals and emails renter & owner (nodemailer)
 
 ## npm Packages
+
 `express`, `helmet`, `express-rate-limit`, `cors`, `dotenv`, `mongodb`, `jsonwebtoken`, `stripe`, `node-cron`, `nodemailer`, `express-async-errors`
 
 ## Run Locally
+
 ```bash
 npm install
 cp .env.example .env   # then fill in your own values
@@ -28,8 +32,10 @@ npm run dev
 ```
 
 ## Environment Variables
+
 See `.env.example`. `INTERNAL_KEY` must be identical in the client and the server.
 
 ## Stripe webhook
+
 Create a webhook endpoint pointing to `/webhook/stripe` for the `checkout.session.completed` event and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Locally: `stripe listen --forward-to localhost:5000/webhook/stripe`.
 MongoDB must support transactions (Atlas does; a standalone local mongod does not).
