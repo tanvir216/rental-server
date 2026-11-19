@@ -12,7 +12,6 @@ const nodemailer = require("nodemailer");
 const app = express(),
   stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-
 const TZ = process.env.APP_TIMEZONE || "Asia/Dhaka";
 const BOOKING = {
   CONFIRMED: "confirmed",
@@ -41,8 +40,7 @@ const clientUrls = (process.env.CLIENT_URL || "")
   .map((u) => u.trim().replace(/\/$/, ""))
   .filter(Boolean);
 
-
-app.set("trust proxy", 1); 
+app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
   cors({ origin: clientUrls.length ? clientUrls : false, credentials: true }),
@@ -56,7 +54,6 @@ app.use(async (req, res, next) => {
     next(e);
   }
 });
-
 
 app.post(
   "/webhook/stripe",
@@ -78,7 +75,7 @@ app.post(
       event.type === "checkout.session.completed" &&
       event.data.object.payment_status === "paid"
     )
-      await fulfill(event.data.object); 
+      await fulfill(event.data.object);
     res.send({ received: true });
   },
 );
@@ -100,7 +97,6 @@ const checkoutLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many attempts, try again later" },
 });
-
 
 const mailer = process.env.EMAIL_USER
   ? nodemailer.createTransport({
@@ -131,7 +127,6 @@ const notify = (b) => {
   sendMail(b.owner.email, "Rental completed", t);
 };
 const num = (v) => (v === "" || v === null || v === undefined ? NaN : +v);
-
 
 const cleanEquip = (body, { partial }) => {
   const out = {};
@@ -164,7 +159,6 @@ app.param("id", (req, res, next, id) =>
   validId(id) ? next() : res.status(400).send({ message: "Invalid id" }),
 );
 
-
 const bearer = (req) => req.headers.authorization?.split(" ")[1];
 const verifyToken = (req, res, next) => {
   const t = bearer(req);
@@ -194,7 +188,6 @@ const internal = (req, res, next) =>
 const verifyRenter = role("customer"),
   verifyOwner = role("owner"),
   verifyAdmin = role("admin");
-
 
 app.post("/users", internal, async (req, res) => {
   const { name, email, photo } = req.body;
@@ -396,7 +389,6 @@ app.patch(
   },
 );
 
-
 app.post("/favorites", verifyToken, verifyRenter, async (req, res) => {
   const { equipmentId } = req.body;
   if (!validId(equipmentId))
@@ -439,7 +431,6 @@ app.delete(
       }),
     ),
 );
-
 
 const calcTotal = (eq, start, end, qty) => {
   const days = Math.max(
@@ -507,7 +498,6 @@ app.post(
 
 class Unfulfillable extends Error {}
 
-
 const refundSession = async (s) => {
   try {
     await stripe.refunds.create(
@@ -521,10 +511,9 @@ const refundSession = async (s) => {
     return true;
   } catch (e) {
     console.error("Refund failed for session", s.id, e.message);
-    return false; 
+    return false;
   }
 };
-
 
 const fulfill = async (s) => {
   const m = s.metadata || {};
@@ -550,7 +539,6 @@ const fulfill = async (s) => {
   };
   const dbSession = client.startSession();
   try {
-
     await dbSession.withTransaction(async () => {
       if (!eq || !u) throw new Unfulfillable();
       await Payments.insertOne(
@@ -588,7 +576,6 @@ const fulfill = async (s) => {
     return { bookingId };
   } catch (e) {
     if (e.code === 11000) {
-
       const old = await Payments.findOne({ sessionId: s.id });
       return old?.bookingId ? { bookingId: old.bookingId } : { soldOut: true };
     }
@@ -644,7 +631,6 @@ app.get("/admin/bookings", verifyToken, verifyAdmin, async (req, res) =>
   res.send(await Bookings.find().sort({ createdAt: -1 }).toArray()),
 );
 
-// refund a booking's payment (used when owner/admin cancels). Returns "refunded" | "failed" | "none"
 const refundBooking = async (b) => {
   const p = await Payments.findOne({ bookingId: b._id });
   if (!p || p.status !== PAY.PAID) return "none";
@@ -684,12 +670,12 @@ app.patch("/bookings/:id/status", verifyToken, async (req, res) => {
   const b = await Bookings.findOne(f);
   if (!b) return res.status(404).send({ message: "Not found" });
   if (st === b.bookingStatus) return res.send({ ok: true });
-  // only a confirmed booking can move on; completed/cancelled are final
+
   if (b.bookingStatus !== BOOKING.CONFIRMED)
     return res
       .status(409)
       .send({ message: `Booking is already ${b.bookingStatus}` });
-  // atomic claim, so a double click can never release the stock twice
+
   const claimed = await Bookings.updateOne(
     { _id: b._id, bookingStatus: BOOKING.CONFIRMED },
     { $set: { bookingStatus: st } },
@@ -703,7 +689,6 @@ app.patch("/bookings/:id/status", verifyToken, async (req, res) => {
   res.send({ ok: true, refund });
 });
 
-// ---------- analytics ----------
 const monthly = (field) => [
   {
     $group: {
@@ -722,7 +707,7 @@ app.get("/analytics/admin", verifyToken, verifyAdmin, async (req, res) => {
       Equip.countDocuments({ status: "pending" }),
       Bookings.countDocuments({ bookingStatus: BOOKING.COMPLETED }),
       Payments.aggregate([
-        { $match: { status: PAY.PAID } }, // refunded money is not revenue
+        { $match: { status: PAY.PAID } },
         { $group: { _id: null, t: { $sum: "$amount" } } },
       ]).toArray(),
       Bookings.aggregate(monthly({ count: { $sum: 1 } })).toArray(),
@@ -802,7 +787,7 @@ const completeDue = async () => {
       { _id: b._id, bookingStatus: BOOKING.CONFIRMED },
       { $set: { bookingStatus: BOOKING.COMPLETED } },
     );
-    if (!claimed.modifiedCount) continue; // someone else just changed it
+    if (!claimed.modifiedCount) continue;
     await releaseStock(b);
     notify(b);
     n++;
@@ -817,24 +802,22 @@ app.get("/cron/complete", async (req, res) => {
     return res.status(401).send({ message: "Unauthorized" });
   res.send({ completed: await completeDue() });
 });
-// node-cron only makes sense on a long-running server; on Vercel the /cron/complete endpoint is hit by Vercel Cron
+
 if (!process.env.VERCEL)
   cron.schedule("0 0 * * *", () => completeDue().catch(console.error), {
     timezone: TZ,
   });
 
-// ---------- fallbacks ----------
 app.get("/", (_, res) => res.send("Equipment Rental API running"));
 app.use((req, res) => res.status(404).send({ message: "Route not found" }));
 app.use((err, req, res, next) => {
   console.error(err);
-  // only expose messages of safe client errors (e.g. bad JSON); never internal ones
+
   if (err.expose && err.status >= 400 && err.status < 500)
     return res.status(err.status).send({ message: err.message });
   res.status(500).send({ message: "Server error" });
 });
 
-// ---------- startup ----------
 const ensureIndex = (col, spec, opts) =>
   col
     .createIndex(spec, opts)
