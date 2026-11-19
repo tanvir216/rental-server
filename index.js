@@ -12,14 +12,18 @@ const nodemailer = require("nodemailer");
 const app = express(),
   stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ---------- constants ----------
+
 const TZ = process.env.APP_TIMEZONE || "Asia/Dhaka";
 const BOOKING = {
   CONFIRMED: "confirmed",
   COMPLETED: "completed",
   CANCELLED: "cancelled",
 };
-const PAY = { PAID: "paid", NEEDS_REFUND: "needs_refund", REFUNDED: "refunded" };
+const PAY = {
+  PAID: "paid",
+  NEEDS_REFUND: "needs_refund",
+  REFUNDED: "refunded",
+};
 const EQUIP_FIELDS = [
   "name",
   "category",
@@ -37,10 +41,12 @@ const clientUrls = (process.env.CLIENT_URL || "")
   .map((u) => u.trim().replace(/\/$/, ""))
   .filter(Boolean);
 
-// ---------- app setup ----------
-app.set("trust proxy", 1); // Vercel sits behind a proxy (needed for rate limit IPs)
+
+app.set("trust proxy", 1); 
 app.use(helmet());
-app.use(cors({ origin: clientUrls.length ? clientUrls : false, credentials: true }));
+app.use(
+  cors({ origin: clientUrls.length ? clientUrls : false, credentials: true }),
+);
 let ready;
 app.use(async (req, res, next) => {
   try {
@@ -51,7 +57,7 @@ app.use(async (req, res, next) => {
   }
 });
 
-// Stripe webhook needs the RAW body, so it must be registered BEFORE express.json()
+
 app.post(
   "/webhook/stripe",
   express.raw({ type: "application/json" }),
@@ -72,7 +78,7 @@ app.post(
       event.type === "checkout.session.completed" &&
       event.data.object.payment_status === "paid"
     )
-      await fulfill(event.data.object); // throws -> 500 -> Stripe retries
+      await fulfill(event.data.object); 
     res.send({ received: true });
   },
 );
@@ -86,8 +92,7 @@ app.use(
     legacyHeaders: false,
   }),
 );
-// NOTE: /jwt and /users are called server-to-server by the client app (all from one IP),
-// so they are protected by INTERNAL_KEY instead of an IP rate limit.
+
 const checkoutLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 20,
@@ -96,7 +101,7 @@ const checkoutLimiter = rateLimit({
   message: { message: "Too many attempts, try again later" },
 });
 
-// ---------- helpers ----------
+
 const mailer = process.env.EMAIL_USER
   ? nodemailer.createTransport({
       service: "gmail",
@@ -127,13 +132,12 @@ const notify = (b) => {
 };
 const num = (v) => (v === "" || v === null || v === undefined ? NaN : +v);
 
-// validates + whitelists equipment fields (only these ever reach the DB)
+
 const cleanEquip = (body, { partial }) => {
   const out = {};
   for (const k of EQUIP_FIELDS) {
     if (body[k] === undefined) continue;
-    if (typeof body[k] !== "string")
-      return { error: `${k} must be text` };
+    if (typeof body[k] !== "string") return { error: `${k} must be text` };
     out[k] = body[k].trim();
   }
   if (body.price !== undefined) {
@@ -160,7 +164,7 @@ app.param("id", (req, res, next, id) =>
   validId(id) ? next() : res.status(400).send({ message: "Invalid id" }),
 );
 
-// ---------- auth ----------
+
 const bearer = (req) => req.headers.authorization?.split(" ")[1];
 const verifyToken = (req, res, next) => {
   const t = bearer(req);
@@ -171,7 +175,7 @@ const verifyToken = (req, res, next) => {
     next();
   });
 };
-// token optional: sets req.user when valid, otherwise continues as a guest
+
 const optionalAuth = (req, res, next) => {
   const t = bearer(req);
   if (!t) return next();
@@ -191,7 +195,7 @@ const verifyRenter = role("customer"),
   verifyOwner = role("owner"),
   verifyAdmin = role("admin");
 
-// ---------- users ----------
+
 app.post("/users", internal, async (req, res) => {
   const { name, email, photo } = req.body;
   if (typeof email !== "string" || !email.includes("@"))
@@ -259,7 +263,7 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   if (!target) return res.status(404).send({ message: "User not found" });
   if (target.email === req.user.email)
     return res.status(400).send({ message: "You cannot delete yourself" });
-  // also remove the BetterAuth login records, so the deleted user cannot sign back in
+
   const ba = await db.collection("user").findOne({ email: target.email });
   if (ba) {
     const ids = [String(ba._id), ba._id];
@@ -271,7 +275,6 @@ app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
   res.send(await Users.deleteOne({ _id: target._id }));
 });
 
-// ---------- equipment ----------
 app.get("/equipment", async (req, res) => {
   const {
     search,
@@ -323,12 +326,15 @@ app.get("/equipment/featured", async (req, res) =>
       .toArray(),
   ),
 );
-// public for approved items; pending/rejected only visible to admin or the owner
+
 app.get("/equipment/:id", optionalAuth, async (req, res) => {
   const e = await Equip.findOne({ _id: oid(req.params.id) });
   const u = req.user;
   const canSee =
-    e && (e.status === "approved" || u?.role === "admin" || (u && e.owner?.email === u.email));
+    e &&
+    (e.status === "approved" ||
+      u?.role === "admin" ||
+      (u && e.owner?.email === u.email));
   if (!canSee) return res.status(404).send({ message: "Equipment not found" });
   res.send(e);
 });
@@ -390,7 +396,7 @@ app.patch(
   },
 );
 
-// ---------- favorites ----------
+
 app.post("/favorites", verifyToken, verifyRenter, async (req, res) => {
   const { equipmentId } = req.body;
   if (!validId(equipmentId))
@@ -412,7 +418,12 @@ app.get("/favorites", verifyToken, verifyRenter, async (req, res) => {
   const f = await Favs.find({ email: req.user.email }).toArray();
   res.send(
     await Equip.find({
-      _id: { $in: f.map((x) => x.equipmentId).filter(validId).map(oid) },
+      _id: {
+        $in: f
+          .map((x) => x.equipmentId)
+          .filter(validId)
+          .map(oid),
+      },
     }).toArray(),
   );
 });
@@ -429,7 +440,7 @@ app.delete(
     ),
 );
 
-// ---------- payments & bookings ----------
+
 const calcTotal = (eq, start, end, qty) => {
   const days = Math.max(
     1,
@@ -496,7 +507,7 @@ app.post(
 
 class Unfulfillable extends Error {}
 
-// Refund the Stripe payment of a session that could not be turned into a booking
+
 const refundSession = async (s) => {
   try {
     await stripe.refunds.create(
@@ -510,12 +521,11 @@ const refundSession = async (s) => {
     return true;
   } catch (e) {
     console.error("Refund failed for session", s.id, e.message);
-    return false; // payment stays "needs_refund" so it can be retried / handled manually
+    return false; 
   }
 };
 
-// Turns a PAID Stripe session into stock decrement + payment + booking, atomically
-// and idempotently (safe to call from both /payments/confirm and the webhook).
+
 const fulfill = async (s) => {
   const m = s.metadata || {};
   const existing = await Payments.findOne({ sessionId: s.id });
@@ -540,7 +550,7 @@ const fulfill = async (s) => {
   };
   const dbSession = client.startSession();
   try {
-    // all-or-nothing: either stock + payment + booking are all saved, or none are
+
     await dbSession.withTransaction(async () => {
       if (!eq || !u) throw new Unfulfillable();
       await Payments.insertOne(
@@ -578,7 +588,7 @@ const fulfill = async (s) => {
     return { bookingId };
   } catch (e) {
     if (e.code === 11000) {
-      // another request (e.g. webhook vs. success page) already fulfilled it
+
       const old = await Payments.findOne({ sessionId: s.id });
       return old?.bookingId ? { bookingId: old.bookingId } : { soldOut: true };
     }
@@ -586,7 +596,7 @@ const fulfill = async (s) => {
   } finally {
     await dbSession.endSession();
   }
-  // out of stock / equipment or user gone -> record it and refund the customer
+
   try {
     await Payments.insertOne({ ...base, status: PAY.NEEDS_REFUND });
   } catch (e) {
@@ -828,7 +838,14 @@ app.use((err, req, res, next) => {
 const ensureIndex = (col, spec, opts) =>
   col
     .createIndex(spec, opts)
-    .catch((e) => console.error("Index failed:", col.collectionName, JSON.stringify(spec), e.message));
+    .catch((e) =>
+      console.error(
+        "Index failed:",
+        col.collectionName,
+        JSON.stringify(spec),
+        e.message,
+      ),
+    );
 
 ready = client.connect().then(async () => {
   db = client.db("equipmentRental");
@@ -852,7 +869,10 @@ ready = client.connect().then(async () => {
     ensureIndex(
       Bookings,
       { sessionId: 1 },
-      { unique: true, partialFilterExpression: { sessionId: { $type: "string" } } },
+      {
+        unique: true,
+        partialFilterExpression: { sessionId: { $type: "string" } },
+      },
     ),
     ensureIndex(Favs, { email: 1, equipmentId: 1 }, { unique: true }),
   ]);
