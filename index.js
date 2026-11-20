@@ -1,4 +1,8 @@
-
+require("dotenv").config();
+require("express-async-errors");
+const express = require("express"),
+  cors = require("cors"),
+  jwt = require("jsonwebtoken"),
   helmet = require("helmet"),
   rateLimit = require("express-rate-limit");
 const cron = require("node-cron"),
@@ -30,6 +34,15 @@ const EQUIP_FIELDS = [
   "brand",
   "model",
   "terms",
+];
+const RENTAL_TYPES = ["Daily", "Weekly", "Monthly"];
+const CATEGORIES = [
+  "Construction Equipment",
+  "Photography Equipment",
+  "Vehicles & Transportation",
+  "Agriculture Equipment",
+  "Electronics",
+  "Event Equipment",
 ];
 const clientUrls = (process.env.CLIENT_URL || "")
   .split(",")
@@ -102,8 +115,10 @@ const mailer = process.env.EMAIL_USER
   : null;
 const sendMail = (to, subject, text) =>
   mailer
-    ?.sendMail({ from: process.env.EMAIL_USER, to, subject, text })
-    .catch(console.error);
+    ? mailer
+        .sendMail({ from: process.env.EMAIL_USER, to, subject, text })
+        .catch(console.error)
+    : Promise.resolve();
 const client = new MongoClient(process.env.MONGODB_URI);
 let db, Users, Equip, Bookings, Payments, Favs;
 const oid = (id) => new ObjectId(id);
@@ -119,8 +134,10 @@ const releaseStock = (b) =>
   );
 const notify = (b) => {
   const t = `Your rental of "${b.equipmentName}" (${b.startDate} to ${b.endDate}) is now completed. Thank you for using RentGear!`;
-  sendMail(b.customer.email, "Rental completed", t);
-  sendMail(b.owner.email, "Rental completed", t);
+  return Promise.all([
+    sendMail(b.customer.email, "Rental completed", t),
+    sendMail(b.owner.email, "Rental completed", t),
+  ]);
 };
 const num = (v) => (v === "" || v === null || v === undefined ? NaN : +v);
 
@@ -131,6 +148,10 @@ const cleanEquip = (body, { partial }) => {
     if (typeof body[k] !== "string") return { error: `${k} must be text` };
     out[k] = body[k].trim();
   }
+  if (out.rentalType !== undefined && !RENTAL_TYPES.includes(out.rentalType))
+    return { error: "Rental type must be Daily, Weekly or Monthly" };
+  if (out.category !== undefined && !CATEGORIES.includes(out.category))
+    return { error: "Invalid category" };
   if (body.price !== undefined) {
     const n = num(body.price);
     if (!Number.isFinite(n) || n <= 0)
@@ -287,10 +308,12 @@ app.get("/equipment", async (req, res) => {
   }
   if (category) q.category = String(category);
   if (rentalType) q.rentalType = String(rentalType);
-  if (minPrice || maxPrice)
+  const lo = num(minPrice),
+    hi = num(maxPrice);
+  if (Number.isFinite(lo) || Number.isFinite(hi))
     q.price = {
-      ...(minPrice && { $gte: +minPrice }),
-      ...(maxPrice && { $lte: +maxPrice }),
+      ...(Number.isFinite(lo) && { $gte: lo }),
+      ...(Number.isFinite(hi) && { $lte: hi }),
     };
   if (available === "true") q.availableQuantity = { $gt: 0 };
   if (available === "false") q.availableQuantity = 0;
@@ -456,8 +479,17 @@ app.post(
     });
     if (!eq) return res.status(404).send({ message: "Equipment not found" });
     const qty = +b.quantity;
-    if (!(new Date(b.startDate) <= new Date(b.endDate)))
+    const DATE = /^\d{4}-\d{2}-\d{2}$/;
+    if (
+      !DATE.test(b.startDate) ||
+      !DATE.test(b.endDate) ||
+      !(b.startDate <= b.endDate)
+    )
       return res.status(400).send({ message: "Invalid dates" });
+    if (b.startDate < todayStr())
+      return res
+        .status(400)
+        .send({ message: "Start date cannot be in the past" });
     if (!Number.isInteger(qty) || qty < 1 || qty > eq.availableQuantity)
       return res.status(400).send({ message: "Not enough quantity available" });
     const total = calcTotal(eq, b.startDate, b.endDate, qty);
@@ -681,7 +713,7 @@ app.patch("/bookings/:id/status", verifyToken, async (req, res) => {
   await releaseStock(b);
   let refund = "none";
   if (st === BOOKING.CANCELLED) refund = await refundBooking(b);
-  if (st === BOOKING.COMPLETED) notify(b);
+  if (st === BOOKING.COMPLETED) await notify(b);
   res.send({ ok: true, refund });
 });
 
@@ -735,9 +767,105 @@ app.get("/analytics/owner", verifyToken, verifyOwner, async (req, res) => {
       { $group: { _id: null, t: { $sum: "$amount" } } },
     ]).toArray(),
     Payments.aggregate([
-
+      paid,
+      ...monthly({ earnings: { $sum: "$amount" } }),
+    ]).toArray(),
+  ]);
+  res.send({
+    listed,
+    completed,
+    totalEarnings: earn[0]?.t || 0,
+    monthlyEarnings: me.map((m) => ({ month: m._id, earnings: m.earnings })),
+  });
+});
+app.get("/analytics/customer", verifyToken, verifyRenter, async (req, res) => {
+  const e = req.user.email,
+    m = [
+      {
+        $match: { "customer.email": e, paymentStatus: { $ne: PAY.REFUNDED } },
+      },
+    ];
+  const [bookings, sp, mo] = await Promise.all([
+    Bookings.countDocuments({ "customer.email": e }),
+    Bookings.aggregate([
+      ...m,
+      { $group: { _id: null, t: { $sum: "$totalAmount" } } },
+    ]).toArray(),
+    Bookings.aggregate([
+      ...m,
+      ...monthly({ spent: { $sum: "$totalAmount" } }),
+    ]).toArray(),
+  ]);
+  res.send({
+    bookings,
+    spent: sp[0]?.t || 0,
+    monthlySpending: mo.map((x) => ({ month: x._id, spent: x.spent })),
+  });
+});
 
 // ---------- cron ----------
+const completeDue = async () => {
+  const due = await Bookings.find({
+    bookingStatus: BOOKING.CONFIRMED,
+    endDate: { $lt: todayStr() },
+  }).toArray();
+  let n = 0;
+  for (const b of due) {
+    const claimed = await Bookings.updateOne(
+      { _id: b._id, bookingStatus: BOOKING.CONFIRMED },
+      { $set: { bookingStatus: BOOKING.COMPLETED } },
+    );
+    if (!claimed.modifiedCount) continue;
+    await releaseStock(b);
+    await notify(b);
+    n++;
+  }
+  return n;
+};
+app.get("/cron/complete", async (req, res) => {
+  if (
+    !process.env.CRON_SECRET ||
+    req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`
+  )
+    return res.status(401).send({ message: "Unauthorized" });
+  res.send({ completed: await completeDue() });
+});
+
+if (!process.env.VERCEL)
+  cron.schedule("0 0 * * *", () => completeDue().catch(console.error), {
+    timezone: TZ,
+  });
+
+app.get("/", (_, res) => res.send("Equipment Rental API running"));
+app.use((req, res) => res.status(404).send({ message: "Route not found" }));
+app.use((err, req, res, next) => {
+  console.error(err);
+
+  if (err.expose && err.status >= 400 && err.status < 500)
+    return res.status(err.status).send({ message: err.message });
+  res.status(500).send({ message: "Server error" });
+});
+
+const ensureIndex = (col, spec, opts) =>
+  col
+    .createIndex(spec, opts)
+    .catch((e) =>
+      console.error(
+        "Index failed:",
+        col.collectionName,
+        JSON.stringify(spec),
+        e.message,
+      ),
+    );
+
+ready = client.connect().then(async () => {
+  db = client.db("equipmentRental");
+  [Users, Equip, Bookings, Payments, Favs] = [
+    "users",
+    "equipment",
+    "bookings",
+    "payments",
+    "favorites",
   ].map((c) => db.collection(c));
   await Promise.all([
     ensureIndex(Payments, { sessionId: 1 }, { unique: true }),
@@ -750,7 +878,7 @@ app.get("/analytics/owner", verifyToken, verifyOwner, async (req, res) => {
     ensureIndex(Bookings, { "owner.email": 1, createdAt: -1 }),
     ensureIndex(Bookings, { bookingStatus: 1, endDate: 1 }),
     ensureIndex(
-        Bookings,
+      Bookings,
       { sessionId: 1 },
       {
         unique: true,
