@@ -739,50 +739,6 @@ app.get("/analytics/owner", verifyToken, verifyOwner, async (req, res) => {
       { $group: { _id: null, t: { $sum: "$amount" } } },
     ]).toArray(),
     Payments.aggregate([
-      paid,
-      ...monthly({ earnings: { $sum: "$amount" } }),
-    ]).toArray(),
-  ]);
-  res.send({
-    listed,
-    completed,
-    totalEarnings: earn[0]?.t || 0,
-    monthlyEarnings: me.map((m) => ({ month: m._id, earnings: m.earnings })),
-  });
-});
-app.get("/analytics/customer", verifyToken, verifyRenter, async (req, res) => {
-  const e = req.user.email,
-    m = [
-      {
-        $match: { "customer.email": e, paymentStatus: { $ne: PAY.REFUNDED } },
-      },
-    ];
-  const [bookings, sp, mo] = await Promise.all([
-    Bookings.countDocuments({ "customer.email": e }),
-    Bookings.aggregate([
-      ...m,
-      { $group: { _id: null, t: { $sum: "$totalAmount" } } },
-    ]).toArray(),
-    Bookings.aggregate([
-      ...m,
-      ...monthly({ spent: { $sum: "$totalAmount" } }),
-    ]).toArray(),
-  ]);
-  res.send({
-    bookings,
-    spent: sp[0]?.t || 0,
-    monthlySpending: mo.map((x) => ({ month: x._id, spent: x.spent })),
-  });
-});
+
 
 // ---------- cron ----------
-const completeDue = async () => {
-  const due = await Bookings.find({
-    bookingStatus: BOOKING.CONFIRMED,
-    endDate: { $lt: todayStr() },
-  }).toArray();
-  let n = 0;
-  for (const b of due) {
-    const claimed = await Bookings.updateOne(
-      { _id: b._id, bookingStatus: BOOKING.CONFIRMED },
-      { $set: { bookingStatus: BOOKING.COMPLETED } },
