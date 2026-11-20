@@ -810,36 +810,3 @@ if (!process.env.VERCEL)
 
 app.get("/", (_, res) => res.send("Equipment Rental API running"));
 app.use((req, res) => res.status(404).send({ message: "Route not found" }));
-app.use((err, req, res, next) => {
-  console.error(err);
-
-  if (err.expose && err.status >= 400 && err.status < 500)
-    return res.status(err.status).send({ message: err.message });
-  res.status(500).send({ message: "Server error" });
-});
-
-const ensureIndex = (col, spec, opts) =>
-  col
-    .createIndex(spec, opts)
-    .catch((e) =>
-      console.error(
-        "Index failed:",
-        col.collectionName,
-        JSON.stringify(spec),
-        e.message,
-      ),
-    );
-
-ready = client.connect().then(async () => {
-  db = client.db("equipmentRental");
-  [Users, Equip, Bookings, Payments, Favs] = [
-    "users",
-    "equipment",
-    "bookings",
-    "payments",
-    "favorites",
-  ].map((c) => db.collection(c));
-  await Promise.all([
-
-      Bookings,
-  
