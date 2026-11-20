@@ -786,27 +786,3 @@ const completeDue = async () => {
     const claimed = await Bookings.updateOne(
       { _id: b._id, bookingStatus: BOOKING.CONFIRMED },
       { $set: { bookingStatus: BOOKING.COMPLETED } },
-    );
-    if (!claimed.modifiedCount) continue;
-    await releaseStock(b);
-    notify(b);
-    n++;
-  }
-  return n;
-};
-app.get("/cron/complete", async (req, res) => {
-  if (
-    !process.env.CRON_SECRET ||
-    req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`
-  )
-    return res.status(401).send({ message: "Unauthorized" });
-  res.send({ completed: await completeDue() });
-});
-
-if (!process.env.VERCEL)
-  cron.schedule("0 0 * * *", () => completeDue().catch(console.error), {
-    timezone: TZ,
-  });
-
-app.get("/", (_, res) => res.send("Equipment Rental API running"));
-app.use((req, res) => res.status(404).send({ message: "Route not found" }));
