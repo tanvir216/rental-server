@@ -842,15 +842,4 @@ ready = client.connect().then(async () => {
   await Promise.all([
 
       Bookings,
-      { sessionId: 1 },
-      {
-        unique: true,
-        partialFilterExpression: { sessionId: { $type: "string" } },
-      },
-    ),
-    ensureIndex(Favs, { email: 1, equipmentId: 1 }, { unique: true }),
-  ]);
-  if (!process.env.VERCEL)
-    app.listen(process.env.PORT || 5000, () => console.log("Server up"));
-});
-module.exports = app;
+  
