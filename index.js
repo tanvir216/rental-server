@@ -840,16 +840,7 @@ ready = client.connect().then(async () => {
     "favorites",
   ].map((c) => db.collection(c));
   await Promise.all([
-    ensureIndex(Payments, { sessionId: 1 }, { unique: true }),
-    ensureIndex(Payments, { ownerEmail: 1, status: 1 }),
-    ensureIndex(Payments, { bookingId: 1 }),
-    ensureIndex(Users, { email: 1 }, { unique: true }),
-    ensureIndex(Equip, { status: 1, createdAt: -1 }),
-    ensureIndex(Equip, { "owner.email": 1 }),
-    ensureIndex(Bookings, { "customer.email": 1, createdAt: -1 }),
-    ensureIndex(Bookings, { "owner.email": 1, createdAt: -1 }),
-    ensureIndex(Bookings, { bookingStatus: 1, endDate: 1 }),
-    ensureIndex(
+
       Bookings,
       { sessionId: 1 },
       {
