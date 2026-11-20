@@ -1,8 +1,4 @@
 
-require("express-async-errors");
-const express = require("express"),
-  cors = require("cors"),
-  jwt = require("jsonwebtoken"),
   helmet = require("helmet"),
   rateLimit = require("express-rate-limit");
 const cron = require("node-cron"),
