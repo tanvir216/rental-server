@@ -754,4 +754,16 @@ app.get("/analytics/owner", verifyToken, verifyOwner, async (req, res) => {
     ensureIndex(Bookings, { "owner.email": 1, createdAt: -1 }),
     ensureIndex(Bookings, { bookingStatus: 1, endDate: 1 }),
     ensureIndex(
-      Bookings,
+        Bookings,
+      { sessionId: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { sessionId: { $type: "string" } },
+      },
+    ),
+    ensureIndex(Favs, { email: 1, equipmentId: 1 }, { unique: true }),
+  ]);
+  if (!process.env.VERCEL)
+    app.listen(process.env.PORT || 5000, () => console.log("Server up"));
+});
+module.exports = app;
