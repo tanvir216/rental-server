@@ -49,6 +49,10 @@ const clientUrls = (process.env.CLIENT_URL || "")
   .map((u) => u.trim().replace(/\/$/, ""))
   .filter(Boolean);
 
+if (!clientUrls.length)
+  console.warn(
+    "CLIENT_URL is not set: all browser (CORS) requests will be blocked",
+  );
 app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
@@ -890,4 +894,5 @@ ready = client.connect().then(async () => {
   if (!process.env.VERCEL)
     app.listen(process.env.PORT || 5000, () => console.log("Server up"));
 });
+ready.catch((e) => console.error("Database connection failed:", e.message));
 module.exports = app;
