@@ -53,87 +53,15 @@ if (!clientUrls.length)
   console.warn(
     "CLIENT_URL is not set: all browser (CORS) requests will be blocked",
   );
-
-// ---------- database (connection is created once and reused) ----------
-const client = new MongoClient(process.env.MONGODB_URI, {
-  maxPoolSize: 10,
-  serverSelectionTimeoutMS: 5000,
-});
-let db, Users, Equip, Bookings, Payments, Favs;
-let ready = null;
-
-const ensureIndex = (col, spec, opts) =>
-  col
-    .createIndex(spec, opts)
-    .catch((e) =>
-      console.error(
-        "Index failed:",
-        col.collectionName,
-        JSON.stringify(spec),
-        e.message,
-      ),
-    );
-
-const ensureAllIndexes = () =>
-  Promise.all([
-    ensureIndex(Payments, { sessionId: 1 }, { unique: true }),
-    ensureIndex(Payments, { ownerEmail: 1, status: 1 }),
-    ensureIndex(Payments, { bookingId: 1 }),
-    ensureIndex(Users, { email: 1 }, { unique: true }),
-    ensureIndex(Equip, { status: 1, createdAt: -1 }),
-    ensureIndex(Equip, { "owner.email": 1 }),
-    ensureIndex(Bookings, { "customer.email": 1, createdAt: -1 }),
-    ensureIndex(Bookings, { "owner.email": 1, createdAt: -1 }),
-    ensureIndex(Bookings, { bookingStatus: 1, endDate: 1 }),
-    ensureIndex(
-      Bookings,
-      { sessionId: 1 },
-      {
-        unique: true,
-        partialFilterExpression: { sessionId: { $type: "string" } },
-      },
-    ),
-    ensureIndex(Favs, { email: 1, equipmentId: 1 }, { unique: true }),
-  ]);
-
-// Connects once. If it fails, the next request will try again.
-const connect = () => {
-  if (!ready) {
-    ready = client
-      .connect()
-      .then(() => {
-        db = client.db("equipmentRental");
-        [Users, Equip, Bookings, Payments, Favs] = [
-          "users",
-          "equipment",
-          "bookings",
-          "payments",
-          "favorites",
-        ].map((c) => db.collection(c));
-
-        // Indexes are NOT created on Vercel requests (that made cold starts slow).
-        // They are created in the background locally, or when you set
-        // ENSURE_INDEXES=true once (e.g. for a single deploy), then remove it.
-        if (!process.env.VERCEL || process.env.ENSURE_INDEXES === "true")
-          ensureAllIndexes().catch(console.error);
-      })
-      .catch((e) => {
-        console.error("Database connection failed:", e.message);
-        ready = null;
-        throw e;
-      });
-  }
-  return ready;
-};
-
 app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
   cors({ origin: clientUrls.length ? clientUrls : false, credentials: true }),
 );
+let ready;
 app.use(async (req, res, next) => {
   try {
-    await connect();
+    await ready;
     next();
   } catch (e) {
     next(e);
@@ -195,6 +123,8 @@ const sendMail = (to, subject, text) =>
         .sendMail({ from: process.env.EMAIL_USER, to, subject, text })
         .catch(console.error)
     : Promise.resolve();
+const client = new MongoClient(process.env.MONGODB_URI);
+let db, Users, Equip, Bookings, Payments, Favs;
 const oid = (id) => new ObjectId(id);
 const validId = (id) =>
   ObjectId.isValid(id) && String(new ObjectId(id)) === String(id);
@@ -280,8 +210,6 @@ const verifyRenter = role("customer"),
   verifyOwner = role("owner"),
   verifyAdmin = role("admin");
 
-// Kept for backward compatibility. The client no longer needs to call this:
-// /jwt below now creates the user if missing.
 app.post("/users", internal, async (req, res) => {
   const { name, email, photo } = req.body;
   if (typeof email !== "string" || !email.includes("@"))
@@ -303,13 +231,12 @@ app.post("/users", internal, async (req, res) => {
   );
   res.send({ ok: true });
 });
-
-// One round trip: create the user if new, then return the token.
 app.post("/jwt", internal, async (req, res) => {
-  const { email, name, photo } = req.body;
+  const { name, email, photo } = req.body;
   if (typeof email !== "string" || !email.includes("@"))
-    return res.status(400).send({ message: "Valid email required" });
-  const u = await Users.findOneAndUpdate(
+    return res.status(400).send({ message: "Email required" });
+  // Create the user on first login (Google or email), then read it back.
+  await Users.updateOne(
     { email },
     {
       $setOnInsert: {
@@ -322,9 +249,9 @@ app.post("/jwt", internal, async (req, res) => {
         createdAt: new Date(),
       },
     },
-    { upsert: true, returnDocument: "after" },
+    { upsert: true },
   );
-  if (!u) return res.status(404).send({ message: "User not found" });
+  const u = await Users.findOne({ email });
   const token = jwt.sign(
     { email: u.email, role: u.role },
     process.env.JWT_SECRET,
@@ -415,24 +342,22 @@ app.get("/equipment", async (req, res) => {
   };
   const pg = Math.max(1, parseInt(page) || 1);
   const lim = Math.min(50, Math.max(1, parseInt(limit) || 9));
-  const [total, items] = await Promise.all([
-    Equip.countDocuments(q),
-    Equip.find(q)
-      .sort(s)
-      .skip((pg - 1) * lim)
-      .limit(lim)
-      .toArray(),
-  ]);
+  const total = await Equip.countDocuments(q);
+  const items = await Equip.find(q)
+    .sort(s)
+    .skip((pg - 1) * lim)
+    .limit(lim)
+    .toArray();
   res.send({ items, total, pages: Math.ceil(total / lim) });
 });
-app.get("/equipment/featured", async (req, res) => {
-  const items = await Equip.find({ status: "approved" })
-    .sort({ createdAt: -1 })
-    .limit(6)
-    .toArray();
-  res.set("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
-  res.send(items);
-});
+app.get("/equipment/featured", async (req, res) =>
+  res.send(
+    await Equip.find({ status: "approved" })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .toArray(),
+  ),
+);
 
 app.get("/equipment/:id", optionalAuth, async (req, res) => {
   const e = await Equip.findOne({ _id: oid(req.params.id) });
@@ -734,15 +659,14 @@ app.get("/my-bookings", verifyToken, verifyRenter, async (req, res) => {
   const pg = Math.max(1, parseInt(req.query.page) || 1);
   const lim = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
   const q = { "customer.email": req.user.email };
-  const [items, total] = await Promise.all([
-    Bookings.find(q)
+  res.send({
+    items: await Bookings.find(q)
       .sort({ createdAt: -1 })
       .skip((pg - 1) * lim)
       .limit(lim)
       .toArray(),
-    Bookings.countDocuments(q),
-  ]);
-  res.send({ items, total });
+    total: await Bookings.countDocuments(q),
+  });
 });
 app.get("/owner-bookings", verifyToken, verifyOwner, async (req, res) =>
   res.send(
@@ -942,13 +866,49 @@ app.use((err, req, res, next) => {
   res.status(500).send({ message: "Server error" });
 });
 
-// Start connecting immediately (in parallel with the rest of the cold start),
-// instead of waiting for the first request.
-connect()
-  .then(() => {
-    if (!process.env.VERCEL)
-      app.listen(process.env.PORT || 5000, () => console.log("Server up"));
-  })
-  .catch(() => {});
+const ensureIndex = (col, spec, opts) =>
+  col
+    .createIndex(spec, opts)
+    .catch((e) =>
+      console.error(
+        "Index failed:",
+        col.collectionName,
+        JSON.stringify(spec),
+        e.message,
+      ),
+    );
 
+ready = client.connect().then(async () => {
+  db = client.db("equipmentRental");
+  [Users, Equip, Bookings, Payments, Favs] = [
+    "users",
+    "equipment",
+    "bookings",
+    "payments",
+    "favorites",
+  ].map((c) => db.collection(c));
+  await Promise.all([
+    ensureIndex(Payments, { sessionId: 1 }, { unique: true }),
+    ensureIndex(Payments, { ownerEmail: 1, status: 1 }),
+    ensureIndex(Payments, { bookingId: 1 }),
+    ensureIndex(Users, { email: 1 }, { unique: true }),
+    ensureIndex(Equip, { status: 1, createdAt: -1 }),
+    ensureIndex(Equip, { "owner.email": 1 }),
+    ensureIndex(Bookings, { "customer.email": 1, createdAt: -1 }),
+    ensureIndex(Bookings, { "owner.email": 1, createdAt: -1 }),
+    ensureIndex(Bookings, { bookingStatus: 1, endDate: 1 }),
+    ensureIndex(
+      Bookings,
+      { sessionId: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { sessionId: { $type: "string" } },
+      },
+    ),
+    ensureIndex(Favs, { email: 1, equipmentId: 1 }, { unique: true }),
+  ]);
+  if (!process.env.VERCEL)
+    app.listen(process.env.PORT || 5000, () => console.log("Server up"));
+});
+ready.catch((e) => console.error("Database connection failed:", e.message));
 module.exports = app;
