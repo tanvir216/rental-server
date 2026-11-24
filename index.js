@@ -53,6 +53,13 @@ if (!clientUrls.length)
   console.warn(
     "CLIENT_URL is not set: all browser (CORS) requests will be blocked",
   );
+for (const k of [
+  "MONGODB_URI",
+  "JWT_SECRET",
+  "INTERNAL_KEY",
+  "STRIPE_SECRET_KEY",
+])
+  if (!process.env[k]) console.error(`MISSING ENV VARIABLE: ${k}`);
 app.set("trust proxy", 1);
 app.use(helmet());
 app.use(
@@ -232,6 +239,10 @@ app.post("/users", internal, async (req, res) => {
   res.send({ ok: true });
 });
 app.post("/jwt", internal, async (req, res) => {
+  if (!process.env.JWT_SECRET)
+    return res
+      .status(500)
+      .send({ message: "Server config error: JWT_SECRET is not set" });
   const { name, email, photo } = req.body;
   if (typeof email !== "string" || !email.includes("@"))
     return res.status(400).send({ message: "Email required" });
